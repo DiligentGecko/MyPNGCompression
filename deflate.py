@@ -4,9 +4,9 @@ import numpy as np
 import zlib
 import bitarray as ba
 import struct
+from datetime import datetime
 from numpy import vsplit
-from scipy import misc
-
+import imageio
 
 # Argumenti deflate.py <SLIKA> <FILTER_TYPE> <BUFFER_SIZE>
 
@@ -22,6 +22,7 @@ def int2bin(i,len):
         j += 1
     return s
 
+#Formiranje osnovnog Huffman recnika
 def generateHuffman():
     huffman = {}
     for i in range(0,144):
@@ -34,6 +35,7 @@ def generateHuffman():
         huffman[i] = int(192+i-280)
     return huffman
 
+#Pretvaranje brojcane vrednosti Huffman koda u string
 def getHuffman(num,huffman):
     if(num >= 0 and num <= 143):
         return int2bin(huffman[num],8)
@@ -47,6 +49,7 @@ def getHuffman(num,huffman):
         print("ERROR")
         return "err"
 
+#Tabela vrednosti Huffman koda za duzinu
 def getLenCode(num,huffman):
     if(num >= 3 and num <= 10):
         return getHuffman(257 - 3 + num,huffman)
@@ -94,6 +97,7 @@ def getLenCode(num,huffman):
         print("ERROR")
         return "err"
 
+#Tabela vrednosti Huffman koda za udaljenost
 def getDistCode(num):
     if(num >= 1 and num <= 4):
         return int2bin(num-1,5)
@@ -129,11 +133,19 @@ def getDistCode(num):
         return int2bin(18,5)+int2bin((num+255)%256,8)[::-1]
     elif(num >= 769 and num <= 1024):
         return int2bin(19,5)+int2bin((num+255)%256,8)[::-1]
-    #TO DO: Zavrsi do 2^31-1
+    elif(num >= 1025 and num <= 1536):
+        return int2bin(20,5)+int2bin((num+511)%512,9)[::-1]
+    elif(num >= 1537 and num <= 2048):
+        return int2bin(21,5)+int2bin((num+511)%512,9)[::-1]
+    elif(num >= 2049 and num <= 3072):
+        return int2bin(22,5)+int2bin((num+1023)%1024,10)[::-1]
+    elif(num >= 3073 and num <= 4096):
+        return int2bin(23,5)+int2bin((num+1023)%1024,10)[::-1]
     else:
         print("ERROR")
         return "err"
-def imgFilter(scanline, F_TYPE):
+
+def imgFilter(scanline, F_TYPE, previous):
     #TO DO: Dodaj sve tipove filtera
     if(F_TYPE == 0):
         return
@@ -141,6 +153,34 @@ def imgFilter(scanline, F_TYPE):
         n = scanline.shape[0]
         for j in range (n-1,0,-1):
             scanline[j] -= scanline[j-1]
+    if(F_TYPE == 2):
+        n = scanline.shape[0]
+        for j in range(n):
+            scanline[j] -= previous[j]
+    if(F_TYPE == 3):
+        n = scanline.shape[0]
+        for j in range (n-1,0,-1):
+            scanline[j] -= int(math.floor((int(previous[j]) + int(scanline[j-1]))/2))
+        scanline[0] -= int(math.floor((0 + int(previous[j]))/2)) 
+    if(F_TYPE == 4):
+        n = scanline.shape[0]
+        for j in range (n-1,0,-1):
+            scanline[j] -= paeth(scanline[j-1], previous[j], previous[j-1])
+
+        scanline[0] -= paeth(0, previous[0], 0) 
+
+def paeth(a,b,c):
+    p = int(a) + int(b) - int(c)
+    pa = abs(p-a)
+    pb = abs(p-b)
+    pc = abs(p-c)
+    if(pa <= pb and pa <= pc):
+        return a
+    elif (pb <= pc):
+        return b
+    else:
+        return c
+
     # Formiram input za Deflate scanline = F_TYPE R G B R G B R G B ... 
 def mergeScanlines(scanlines, F_TYPE):
     mSize = len(scanlines)
@@ -157,10 +197,22 @@ def mergeScanlines(scanlines, F_TYPE):
         slList.append(newScanline)
     return slList
 
+def mergeScanlinesGrey(scanlines, F_TYPE):
+    mSize = len(scanlines)
+    sShape = scanlines[0].shape
+    slList = []
+
+    for i in range (0,mSize):
+        newScanline = np.zeros(sShape[1]+1,dtype = np.uint8)
+        newScanline[0] = F_TYPE
+        for j in range (0,sShape[1]):
+            newScanline[j+1] = scanlines[i][0,j]
+        slList.append(newScanline)
+    return slList
+
 def findInWindow(subArray, searchBuffer,startSearchLen):
     n = len(searchBuffer)
     m = len(subArray)
-    #print(subArray)
     exists = 0
     location = 0;  
     v_len = 0
@@ -169,9 +221,6 @@ def findInWindow(subArray, searchBuffer,startSearchLen):
             exists = 1
             location = startSearchLen-i
             v_len = len(subArray)
-            #print(subArray)
-            #print(location)
-            #print(v_len)
             break
     return [exists, location, v_len]
 
@@ -179,19 +228,9 @@ def findInWindow(subArray, searchBuffer,startSearchLen):
     # Vraca niz sa 3 moguce vrednosti Literal, Duzina, Udaljenost
 def deflate(scanline, searchWindowL, outputPNG, isLast, huffman,outputBitStream):
 
-    #Zlib stream header
-    #cINF = int(math.log2(searchWindowL)-8)
-    #cINFBin = int2bin(cINF,4)
-             #|--CINF-|-CM-|
-    #CMF = int(cINFBin+'1000', 2)
-
-    #FLG = int('01000000', 2)
-    #FLG += 31 - (CMF<<8 + FLG)%31
-
-    #Za racunanje duzine
     startLoc = outputPNG.tell()
 
-    #zLibHeaderArray = bytearray([CMF,FLG])
+
     #Prva tri bita svakog bloka
 
     if(isLast != 1):
@@ -224,9 +263,7 @@ def deflate(scanline, searchWindowL, outputPNG, isLast, huffman,outputBitStream)
             searchBuffer.append(searchedEle[0])
 
         num_br = 1
-
         endOfRow = 0
-
 
         # Trazim dok god imam brojeva u bufferu
         if len(aheadBuffer) > num_br:
@@ -263,14 +300,11 @@ def deflate(scanline, searchWindowL, outputPNG, isLast, huffman,outputBitStream)
             rELV = findInWindow(newEle, searchBuffer[0:len(searchBuffer)],startSearchLen)
             if (rELV[2] > 2):
                 i += rELV[2]
-                resultArray = np.append(resultArray,[rELV[2],rELV[1]])
-                #print(rELV[2])
                 outputBitStream += ba.bitarray(getLenCode(rELV[2],huffman))
                 outputBitStream += ba.bitarray(getDistCode(rELV[1]))
                
             else:
                 i += rELV[2]
-                resultArray = np.append(resultArray,aheadBuffer[0:num_br])
                 if(rELV[2] == 1):
                     outputBitStream += ba.bitarray(getHuffman(aheadBuffer[0],huffman))
                 else:
@@ -279,62 +313,61 @@ def deflate(scanline, searchWindowL, outputPNG, isLast, huffman,outputBitStream)
         else:
         #Ako nije
             i += 1
-            resultArray = np.append(resultArray, searchedEle)
             outputBitStream += ba.bitarray(getHuffman(int(searchedEle[0]),huffman))
 
     #Oznaka kraja bloka
     outputBitStream += ba.bitarray(getHuffman(256,huffman))
-    #print(resultArray)
-    #Za racunanje duzine
-    #print(scanline)
 
     endLoc = outputPNG.tell() 
-    #outputPNG.seek(-endLoc+startLoc,1)
-    #print(outputBitStream)
-    #print(bytes(outputPNG.read(endLoc-startLoc)).hex())
-    #print(resultArray)
     return endLoc-startLoc 
-         
 
+#python deflate.py <image_location> <filter_type> <buffer_size>
 
+start_t = datetime.now()
 source = sys.argv[1]
 filterType = int(sys.argv[2])
 windowSize = int(sys.argv[3])
 
-
-
-image = misc.imread(source)
+image = imageio.imread(source)
 imSize = image.shape
 scanCount = imSize[0]
 
-channelCount = imSize[2]
-
+if(len(imSize) > 2):
+    channelCount = imSize[2]
+else:
+    channelCount = 1
 huffman = generateHuffman()
-#Delim sirinu na 4 byte-a
+
+#Delim dimenzije na 4 byte-a
 w1, w2, w3, w4 = (imSize[1] & 0xFFFFFFFF).to_bytes(4, 'big')
 h1, h2, h3, h4 = (imSize[0] & 0xFFFFFFFF).to_bytes(4, 'big')
 scanlines = vsplit(image,imSize[0])
 
-outputPNG = open("output.png", "wb+")
+if(channelCount == 3):
+    c = 2
+else:
+    c = 0
+
+
+
+name = source.split('.')[0]
+
+outputPNG = open("out/" + name + "_FILTER_" + str(filterType) + ".png", "wb+")
 
               #|-----PNG SIGNATURE ----|--LEN --|---IHDR ---|---WIDTH---|--HEIGHT --|D|C|M|F|I|
-headerBytes = [137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,w1,w2,w3,w4,h1,h2,h3,h4,8,2,0,0,0]
+headerBytes = [137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,w1,w2,w3,w4,h1,h2,h3,h4,8,c,0,0,0]
 
-headerData = bytearray([73,72,68,82,w1,w2,w3,w4,h1,h2,h3,h4,8,2,0,0,0])
-#print(headerBytes)
-#print(headerData)
+headerData = bytearray([73,72,68,82,w1,w2,w3,w4,h1,h2,h3,h4,8,c,0,0,0])
 dataLenPlace = len(headerBytes)
 headerByteArray = bytearray(headerBytes)
 outputPNG.write(headerByteArray)
 
 iHDRCRC32 = zlib.crc32(headerData) 
-#print(hex(iHDRCRC32))
 crc1, crc2, crc3, crc4 = (iHDRCRC32 & 0xFFFFFFFF).to_bytes(4, 'big')
-#print(int2bin(crc1,8)+int2bin(crc2,8) + int2bin(crc3,8) + int2bin(crc4,8))
 iHDRCRC32Array = bytearray([crc1, crc2, crc3, crc4])
 outputPNG.write(iHDRCRC32Array)
 
-#TO DO: Postavi Len na broj byte-ova
+#Formiranje IDAT chunka
 iDATLenLocation = outputPNG.tell()
 
            #|--LEN--|---IDAT ---|
@@ -342,12 +375,26 @@ iDATBtyes = [0,0,0,0,73,68,65,84]
 iDATByteArray = bytearray(iDATBtyes)
 outputPNG.write(iDATByteArray)
 
-for sl in scanlines:
-    for i in range(0,channelCount):
-            imgFilter(sl[0,:,i],filterType)
+previous = np.zeros(scanlines[0].shape,dtype = np.uint8)
 
-           
-newScanlines = mergeScanlines(scanlines,filterType)
+if(channelCount > 1):
+    for sl in scanlines:
+        temp = np.copy(sl)
+        for i in range(0,channelCount):
+            imgFilter(sl[0,:,i],filterType, previous[0,:,i])
+
+        previous = temp
+else:
+    for sl in scanlines:
+        temp = np.copy(sl)
+        imgFilter(sl[0,:],filterType, previous[0,:])
+        previous = temp
+
+if(channelCount > 1):          
+    newScanlines = mergeScanlines(scanlines,filterType)
+else:
+    newScanlines = mergeScanlinesGrey(scanlines,filterType)
+
 iDATStart = outputPNG.tell()
 
 
@@ -358,17 +405,13 @@ uncompressedArray  = bytearray()
 outputBitStream = ba.bitarray(endian = 'little')
 
 for i in range(0,len(newScanlines)):
-        print(i)
+        print(str(i+1) + '/' + str(imSize[0]))
         if(i != (len(newScanlines)-1)):
-            #print(newScanlines[i])
             deflate(newScanlines[i],windowSize,outputPNG,0,huffman,outputBitStream)
             uncompressedArray += bytearray(newScanlines[i])
         else:
-            #print(newScanlines[i])
             deflate(newScanlines[i],windowSize,outputPNG,1,huffman,outputBitStream)
             uncompressedArray += bytearray(newScanlines[i])
-
-#print(len(uncompressedArray))
 
 outputBitStream.tofile(outputPNG)
 
@@ -379,7 +422,6 @@ outputPNG.write(adler32Array)
 
 iDATEnd = outputPNG.tell()
 
-#print(newScanlines[0])
 outputPNG.seek(iDATLenLocation,0)
 iD1, iD2, iD3, iD4 = (iDATEnd-iDATStart & 0xFFFFFFFF).to_bytes(4, 'big')
 iDatLenByteArray = bytearray([iD1, iD2, iD3, iD4])
@@ -390,11 +432,6 @@ outputPNG.seek(4,1)
 iDATData = bytearray([73,68,65,84])
 for i in range(0,iDATEnd-iDATStart):
     iDATData.append(int.from_bytes(bytes(outputPNG.read(1)), byteorder='big'))
-#iDATData.join(bytearray)
-
-
-#print(bytes(zlib.compress(scanlines[0])).hex())
-
 
 iDATCRC32 = zlib.crc32(iDATData) 
 
@@ -402,6 +439,7 @@ icrc1, icrc2, icrc3, icrc4 = (iDATCRC32 & 0xFFFFFFFF).to_bytes(4, 'big')
 iDATCRC32Array = bytearray([icrc1, icrc2, icrc3, icrc4])
 outputPNG.write(iDATCRC32Array)
 
+#Formiranje IEND chunka
 iENDBtyes = [0,0,0,0,73,69,78,68]
 iENDByteArray = bytearray(iENDBtyes)
 outputPNG.write(iENDByteArray)
@@ -413,10 +451,8 @@ ecrc1, ecrc2, ecrc3, ecrc4 = (iENDCRC32 & 0xFFFFFFFF).to_bytes(4, 'big')
 iENDCRC32Array = bytearray([ecrc1, ecrc2, ecrc3, ecrc4])
 outputPNG.write(iENDCRC32Array)
 
-#outputPNG.seek(iDATStart,0)
-#decompValue = zlib.decompress(outputPNG.read(iDATEnd-iDATStart))
-#print(bytes(decompValue).hex())
-
 outputPNG.close()
-#test = lz77(newScanlines[0],windowSize)
-#print(scanlines[0][0,:,0])
+
+end_t = datetime.now()
+rez = end_t - start_t
+print(str(rez))
